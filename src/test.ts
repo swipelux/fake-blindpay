@@ -38,7 +38,7 @@ async function test(
     const err = validate?.(res.status, json) ?? null;
     results.push({
       name,
-      passed: res.status < 400 && !err,
+      passed: !err,
       status: res.status,
       body: json,
       error: err ?? undefined,
@@ -67,9 +67,10 @@ async function run() {
 
   console.log("Running fake-blindpay endpoint tests...\n");
 
-  // ---------- RECEIVERS ----------
+  // ==================== RECEIVERS ====================
 
-  // Create individual receiver
+  // --- Happy paths ---
+
   await test(
     "Create individual receiver",
     "POST",
@@ -79,27 +80,98 @@ async function run() {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("rc_")) return `Bad id: ${b.id}`;
       if (b.type !== "individual") return `Expected individual, got ${b.type}`;
+      if (b.first_name !== "John") return `Wrong first_name: ${b.first_name}`;
+      if (b.last_name !== "Doe") return `Wrong last_name: ${b.last_name}`;
+      if (b.kyc_status !== "approved") return `Wrong kyc: ${b.kyc_status}`;
       return null;
     },
   );
 
-  // Create business receiver
   await test(
     "Create business receiver",
     "POST",
     "/receivers",
-    { business_name: "Acme Corp", email: "acme@example.com" },
+    {
+      business_name: "Acme Corp",
+      email: "acme@example.com",
+      country: "US",
+      website: "https://acme.com",
+    },
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("rc_")) return `Bad id: ${b.id}`;
       if (b.type !== "business") return `Expected business, got ${b.type}`;
+      if (b.business_name !== "Acme Corp")
+        return `Wrong name: ${b.business_name}`;
+      if (b.country !== "US") return `Wrong country: ${b.country}`;
+      return null;
+    },
+  );
+
+  // --- Validation errors ---
+
+  await test(
+    "Reject individual receiver without first_name",
+    "POST",
+    "/receivers",
+    { last_name: "Doe", email: "john@example.com" },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("first_name")) return `Missing field hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject individual receiver without email",
+    "POST",
+    "/receivers",
+    { first_name: "John", last_name: "Doe" },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("email")) return `Missing field hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject individual receiver with invalid email",
+    "POST",
+    "/receivers",
+    { first_name: "John", last_name: "Doe", email: "not-an-email" },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("email")) return `Missing email hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject business receiver without email",
+    "POST",
+    "/receivers",
+    { business_name: "Acme Corp", country: "US" },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("email")) return `Missing field hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject business receiver without business_name",
+    "POST",
+    "/receivers",
+    { legal_name: "Acme Corp", email: "acme@example.com", country: "US" },
+    (s, b: any) => {
+      // legal_name triggers business path but business_name is required
+      if (s !== 400) return `Expected 400, got ${s}`;
       return null;
     },
   );
 
   const receiverId = "rc_test_receiver_001";
 
-  // Get receiver
   await test(
     "Get receiver",
     "GET",
@@ -108,11 +180,12 @@ async function run() {
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (b.id !== receiverId) return `Bad id: ${b.id}`;
+      if (b.kyc_status !== "approved") return `Wrong kyc: ${b.kyc_status}`;
       return null;
     },
   );
 
-  // ---------- BANK ACCOUNTS ----------
+  // ==================== BANK ACCOUNTS ====================
 
   await test(
     "Create bank account (ACH)",
@@ -136,12 +209,108 @@ async function run() {
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("ba_")) return `Bad id: ${b.id}`;
-      if (b.routing_number !== "021000021") return `Wrong routing: ${b.routing_number}`;
+      if (b.routing_number !== "021000021")
+        return `Wrong routing: ${b.routing_number}`;
+      if (b.account_class !== "individual")
+        return `Wrong class: ${b.account_class}`;
       return null;
     },
   );
 
-  // ---------- VIRTUAL ACCOUNTS ----------
+  await test(
+    "Create business bank account",
+    "POST",
+    `/receivers/${receiverId}/bank-accounts`,
+    {
+      type: "ach",
+      beneficiary_name: "Acme Corp",
+      routing_number: "021000021",
+      account_number: "987654321",
+      account_type: "checking",
+      account_class: "business",
+      recipient_relationship: "vendor_or_supplier",
+    },
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.account_class !== "business") return `Wrong class: ${b.account_class}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject bank account with invalid routing number",
+    "POST",
+    `/receivers/${receiverId}/bank-accounts`,
+    {
+      type: "ach",
+      beneficiary_name: "John Doe",
+      routing_number: "12345", // too short
+      account_number: "123456789",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("routing_number"))
+        return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject bank account without beneficiary_name",
+    "POST",
+    `/receivers/${receiverId}/bank-accounts`,
+    {
+      type: "ach",
+      routing_number: "021000021",
+      account_number: "123456789",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("beneficiary_name"))
+        return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject bank account with invalid account_type",
+    "POST",
+    `/receivers/${receiverId}/bank-accounts`,
+    {
+      type: "ach",
+      beneficiary_name: "John Doe",
+      routing_number: "021000021",
+      account_number: "123456789",
+      account_type: "credit",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("account_type"))
+        return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject bank account with invalid recipient_relationship",
+    "POST",
+    `/receivers/${receiverId}/bank-accounts`,
+    {
+      type: "ach",
+      beneficiary_name: "John Doe",
+      routing_number: "021000021",
+      account_number: "123456789",
+      recipient_relationship: "friend",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("recipient_relationship"))
+        return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  // ==================== VIRTUAL ACCOUNTS ====================
 
   await test(
     "Get virtual accounts",
@@ -155,11 +324,12 @@ async function run() {
       if (!va.us?.ach?.routing_number) return "Missing ACH routing number";
       if (!va.us?.wire?.routing_number) return "Missing wire routing number";
       if (!va.us?.swift_bic_code) return "Missing SWIFT BIC code";
+      if (va.kyc_status !== "approved") return `Wrong kyc: ${va.kyc_status}`;
       return null;
     },
   );
 
-  // ---------- BLOCKCHAIN WALLETS ----------
+  // ==================== BLOCKCHAIN WALLETS ====================
 
   await test(
     "Get blockchain wallets",
@@ -170,6 +340,8 @@ async function run() {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!Array.isArray(b) || b.length === 0) return "Expected non-empty array";
       if (!b[0].address) return "Missing wallet address";
+      if (typeof b[0].is_account_abstraction !== "boolean")
+        return "Missing is_account_abstraction";
       return null;
     },
   );
@@ -188,11 +360,79 @@ async function run() {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("bw_")) return `Bad id: ${b.id}`;
       if (b.network !== "polygon") return `Wrong network: ${b.network}`;
+      if (b.is_account_abstraction !== false) return "Expected AA=false";
       return null;
     },
   );
 
-  // ---------- PAYIN FLOW ----------
+  await test(
+    "Create blockchain wallet with account-abstraction=true",
+    "POST",
+    `/receivers/${receiverId}/blockchain-wallets`,
+    {
+      name: "AA Wallet",
+      address: "0x" + "c".repeat(40),
+      network: "base",
+      is_account_abstraction: true,
+    },
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.is_account_abstraction !== true) return "Expected AA=true";
+      if (b.network !== "base") return `Wrong network: ${b.network}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject blockchain wallet without name",
+    "POST",
+    `/receivers/${receiverId}/blockchain-wallets`,
+    {
+      address: "0x" + "d".repeat(40),
+      network: "polygon",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("name")) return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject blockchain wallet with invalid address",
+    "POST",
+    `/receivers/${receiverId}/blockchain-wallets`,
+    {
+      name: "Bad Wallet",
+      address: "not-an-address",
+      network: "polygon",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("address")) return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject blockchain wallet with non-boolean is_account_abstraction",
+    "POST",
+    `/receivers/${receiverId}/blockchain-wallets`,
+    {
+      name: "Bad AA Wallet",
+      address: "0x" + "e".repeat(40),
+      network: "polygon",
+      is_account_abstraction: "yes",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("is_account_abstraction"))
+        return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  // ==================== PAYIN FLOW ====================
 
   // Create payin quote
   let quoteId: string | undefined;
@@ -210,9 +450,59 @@ async function run() {
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("qu_")) return `Bad id: ${b.id}`;
-      if (b.sender_amount !== 50000) return `Wrong sender_amount: ${b.sender_amount}`;
-      if (b.receiver_amount >= b.sender_amount) return "Receiver >= sender (no fee?)";
+      if (b.sender_amount !== 50000)
+        return `Wrong sender_amount: ${b.sender_amount}`;
+      if (b.receiver_amount >= b.sender_amount)
+        return "Receiver >= sender (no fee?)";
       quoteId = b.id;
+      return null;
+    },
+  );
+
+  // Payin quote validation tests
+  await test(
+    "Reject payin quote without blockchain_wallet_id",
+    "POST",
+    "/payin-quotes",
+    { payment_method: "ach", token: "USDC", request_amount: 10000 },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("blockchain_wallet_id"))
+        return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject payin quote with invalid token",
+    "POST",
+    "/payin-quotes",
+    {
+      blockchain_wallet_id: "bw_test",
+      payment_method: "ach",
+      token: "BTC",
+      request_amount: 10000,
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("token")) return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject payin quote below minimum amount",
+    "POST",
+    "/payin-quotes",
+    {
+      blockchain_wallet_id: "bw_test",
+      payment_method: "ach",
+      token: "USDC",
+      request_amount: 500,
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("1000")) return `Missing min hint: ${b.message}`;
       return null;
     },
   );
@@ -228,28 +518,71 @@ async function run() {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("pi_")) return `Bad id: ${b.id}`;
       if (b.status !== "processing") return `Expected processing, got ${b.status}`;
-      if (!b.blindpay_bank_details?.routing_number) return "Missing bank details";
+      if (!b.blindpay_bank_details?.routing_number)
+        return "Missing bank details";
       if (!b.memo_code) return "Missing memo_code";
       payinId = b.id;
       return null;
     },
   );
 
-  // Get payin status
   await test(
-    "Get payin status",
+    "Reject payin without quote_id",
+    "POST",
+    "/payins/evm",
+    {},
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      return null;
+    },
+  );
+
+  // --- Status lifecycle tests ---
+
+  // Immediately after creation, payin should still be processing (delay=10000ms)
+  await test(
+    "Payin status is processing immediately after creation",
     "GET",
-    `/payins/${payinId ?? "pi_fallback"}`,
+    `/payins/${payinId ?? "pi_fallback"}?delay=10000`,
     undefined,
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.status !== "completed") return `Expected completed, got ${b.status}`;
+      if (b.status !== "processing")
+        return `Expected processing, got ${b.status}`;
+      return null;
+    },
+  );
+
+  // With delay=0, payin should be completed immediately
+  await test(
+    "Payin status is completed after delay expires",
+    "GET",
+    `/payins/${payinId ?? "pi_fallback"}?delay=0`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.status !== "completed")
+        return `Expected completed, got ${b.status}`;
       if (!b.blindpay_bank_details) return "Missing bank details on GET";
       return null;
     },
   );
 
-  // ---------- PAYOUT FX RATE ----------
+  // Unknown payin returns completed (backwards-compatible)
+  await test(
+    "Unknown payin returns completed (fallback)",
+    "GET",
+    "/payins/pi_does_not_exist",
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.status !== "completed")
+        return `Expected completed, got ${b.status}`;
+      return null;
+    },
+  );
+
+  // ==================== PAYOUT FX RATE ====================
 
   await test(
     "Get payout FX rate",
@@ -269,7 +602,30 @@ async function run() {
     },
   );
 
-  // ---------- AUTH CHECK ----------
+  await test(
+    "Reject FX quote without currencies",
+    "POST",
+    "/quotes/fx",
+    { request_amount: 10000 },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject FX quote with invalid from currency",
+    "POST",
+    "/quotes/fx",
+    { from: "BTC", to: "USD", request_amount: 10000 },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("from")) return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  // ==================== AUTH CHECK ====================
 
   try {
     const res = await fetch(`${API}/payin-quotes`, {
@@ -295,7 +651,7 @@ async function run() {
     });
   }
 
-  // ---------- REPORT ----------
+  // ==================== REPORT ====================
 
   console.log("\n" + "=".repeat(60));
   console.log("FAKE-BLINDPAY ENDPOINT TEST REPORT");
@@ -320,7 +676,9 @@ async function run() {
       console.log(`\n  ${r.name}:`);
       console.log(`    Status: ${r.status}`);
       console.log(`    Error: ${r.error}`);
-      console.log(`    Body: ${JSON.stringify(r.body, null, 2).slice(0, 500)}`);
+      console.log(
+        `    Body: ${JSON.stringify(r.body, null, 2).slice(0, 500)}`,
+      );
     }
   }
 
