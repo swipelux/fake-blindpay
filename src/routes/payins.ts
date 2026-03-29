@@ -1,5 +1,12 @@
 import { Hono } from "hono";
 import { genId } from "../ids";
+import {
+  storeQuote,
+  getQuote,
+  storePayin,
+  getPayin,
+  type PayinStatus,
+} from "../store";
 
 const app = new Hono();
 
@@ -17,36 +24,6 @@ const FAKE_BANK_DETAILS = {
   },
 };
 
-// --- In-memory payin store for status lifecycle ---
-// Key: payinId, Value: { createdAt, quoteId, ... }
-const payinStore = new Map<
-  string,
-  {
-    createdAt: number;
-    quoteId: string;
-    instanceId: string;
-    senderAmount: number;
-    receiverAmount: number;
-    token: string;
-    paymentMethod: string;
-  }
->();
-
-// How many ms before a payin transitions from processing → completed.
-// Default 3s, controllable via PAYIN_COMPLETE_DELAY_MS env var or ?delay=<ms> query.
-const DEFAULT_COMPLETE_DELAY_MS = parseInt(
-  process.env.PAYIN_COMPLETE_DELAY_MS ?? "3000",
-  10,
-);
-
-type PayinStatus = "processing" | "on_hold" | "completed" | "failed" | "refunded";
-
-function resolvePayinStatus(createdAt: number, delayMs: number): PayinStatus {
-  const elapsed = Date.now() - createdAt;
-  if (elapsed < delayMs) return "processing";
-  return "completed";
-}
-
 function buildPayinResponse(
   id: string,
   quoteId: string,
@@ -56,8 +33,9 @@ function buildPayinResponse(
   receiverAmount: number,
   token: string,
   paymentMethod: string,
+  createdAt: string,
+  updatedAt: string,
 ) {
-  const now = new Date().toISOString();
   return {
     id,
     status,
@@ -77,8 +55,8 @@ function buildPayinResponse(
     transaction_fee_amount: 0,
     partner_fee_amount: 0,
     billing_fee_amount: 0,
-    created_at: now,
-    updated_at: now,
+    created_at: createdAt,
+    updated_at: updatedAt,
   };
 }
 
@@ -86,7 +64,6 @@ function buildPayinResponse(
 app.post("/payin-quotes", async (c) => {
   const body = await c.req.json();
 
-  // Validate required fields
   if (!body.blockchain_wallet_id) {
     return c.json(
       { error: "validation_error", message: "blockchain_wallet_id is required" },
@@ -109,29 +86,40 @@ app.post("/payin-quotes", async (c) => {
   const validTokens = ["USDC", "USDT", "USDB"];
   if (!validTokens.includes(body.token)) {
     return c.json(
-      {
-        error: "validation_error",
-        message: `token must be one of: ${validTokens.join(", ")}`,
-      },
+      { error: "validation_error", message: `token must be one of: ${validTokens.join(", ")}` },
       400,
     );
   }
 
   const requestAmount: number = body.request_amount ?? 10000;
   if (requestAmount < 1000) {
-    // Minimum $10 in cents
     return c.json(
-      {
-        error: "validation_error",
-        message: "request_amount must be at least 1000 ($10.00)",
-      },
+      { error: "validation_error", message: "request_amount must be at least 1000 ($10.00)" },
       400,
     );
   }
 
-  const fee = Math.round(requestAmount * 0.01); // 1% fee
+  const fee = Math.round(requestAmount * 0.01);
   const receiverAmount = requestAmount - fee;
   const quoteId = genId("quote");
+
+  const quote = {
+    id: quoteId,
+    blockchain_wallet_id: body.blockchain_wallet_id,
+    currency_type: body.currency_type ?? "sender",
+    request_amount: requestAmount,
+    sender_amount: requestAmount,
+    receiver_amount: receiverAmount,
+    flat_fee: fee,
+    payment_method: body.payment_method,
+    token: body.token,
+    commercial_quotation: 100,
+    blindpay_quotation: 100,
+    billing_fee_amount: 0,
+    partner_fee_amount: 0,
+    expires_at: Date.now() + 5 * 60 * 1000,
+  };
+  storeQuote(quote);
 
   return c.json({
     id: quoteId,
@@ -142,7 +130,7 @@ app.post("/payin-quotes", async (c) => {
     partner_fee_amount: 0,
     commercial_quotation: 100,
     blindpay_quotation: 100,
-    expires_at: Date.now() + 5 * 60 * 1000, // 5 min
+    expires_at: quote.expires_at,
   });
 });
 
@@ -158,23 +146,32 @@ app.post("/payins/evm", async (c) => {
     );
   }
 
-  const payinId = genId("payin");
   const quoteId: string = body.payin_quote_id;
-  const senderAmount = 10000;
-  const receiverAmount = 9900;
-  const token = "USDC";
-  const paymentMethod = "ach";
+  const quote = getQuote(quoteId);
+  if (!quote) {
+    return c.json(
+      { error: "not_found", message: `Quote ${quoteId} not found` },
+      404,
+    );
+  }
 
-  // Store for status lifecycle tracking
-  payinStore.set(payinId, {
-    createdAt: Date.now(),
+  const payinId = genId("payin");
+  const now = new Date().toISOString();
+
+  const payin = {
+    id: payinId,
+    status: "processing" as PayinStatus,
     quoteId,
     instanceId,
-    senderAmount,
-    receiverAmount,
-    token,
-    paymentMethod,
-  });
+    receiverId: "rc_fake_receiver",
+    senderAmount: quote.sender_amount,
+    receiverAmount: quote.receiver_amount,
+    token: quote.token,
+    paymentMethod: quote.payment_method,
+    createdAt: now,
+    updatedAt: now,
+  };
+  storePayin(payin);
 
   return c.json(
     buildPayinResponse(
@@ -182,53 +179,40 @@ app.post("/payins/evm", async (c) => {
       quoteId,
       instanceId,
       "processing",
-      senderAmount,
-      receiverAmount,
-      token,
-      paymentMethod,
+      payin.senderAmount,
+      payin.receiverAmount,
+      payin.token,
+      payin.paymentMethod,
+      now,
+      now,
     ),
   );
 });
 
 // GET /v1/instances/:instanceId/payins/:payinId — get payin status
-// Status evolves over time: processing → completed (after PAYIN_COMPLETE_DELAY_MS)
-// Override delay with ?delay=<ms> query param for testing
 app.get("/payins/:payinId", (c) => {
-  const instanceId = c.req.param("instanceId") ?? "inst_unknown";
   const payinId = c.req.param("payinId")!;
-  const delayOverride = c.req.query("delay");
-  const delayMs = delayOverride
-    ? parseInt(delayOverride, 10)
-    : DEFAULT_COMPLETE_DELAY_MS;
+  const payin = getPayin(payinId);
 
-  const stored = payinStore.get(payinId);
-  if (stored) {
-    const status = resolvePayinStatus(stored.createdAt, delayMs);
+  if (!payin) {
     return c.json(
-      buildPayinResponse(
-        payinId,
-        stored.quoteId,
-        stored.instanceId,
-        status,
-        stored.senderAmount,
-        stored.receiverAmount,
-        stored.token,
-        stored.paymentMethod,
-      ),
+      { error: "not_found", message: `Payin ${payinId} not found` },
+      404,
     );
   }
 
-  // Unknown payin — return completed (backwards-compatible fallback)
   return c.json(
     buildPayinResponse(
       payinId,
-      "qu_resolved",
-      instanceId,
-      "completed",
-      10000,
-      9900,
-      "USDC",
-      "ach",
+      payin.quoteId,
+      payin.instanceId,
+      payin.status,
+      payin.senderAmount,
+      payin.receiverAmount,
+      payin.token,
+      payin.paymentMethod,
+      payin.createdAt,
+      payin.updatedAt,
     ),
   );
 });

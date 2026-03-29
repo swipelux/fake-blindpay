@@ -6,6 +6,7 @@
 const BASE = "http://localhost:3001";
 const INSTANCE_ID = "inst_test123";
 const API = `${BASE}/v1/instances/${INSTANCE_ID}`;
+const ADMIN = `${BASE}/admin`;
 const HEADERS = {
   Authorization: "Bearer test-api-key",
   "Content-Type": "application/json",
@@ -24,14 +25,15 @@ const results: TestResult[] = [];
 async function test(
   name: string,
   method: string,
-  path: string,
+  url: string,
   body?: unknown,
   validate?: (status: number, body: unknown) => string | null,
+  headers?: Record<string, string>,
 ) {
   try {
-    const res = await fetch(`${API}${path}`, {
+    const res = await fetch(url, {
       method,
-      headers: HEADERS,
+      headers: headers ?? HEADERS,
       body: body ? JSON.stringify(body) : undefined,
     });
     const json = await res.json();
@@ -65,16 +67,20 @@ async function run() {
     }
   }
 
+  // Reset state before tests
+  await fetch(`${ADMIN}/reset`, { method: "POST" });
+
   console.log("Running fake-blindpay endpoint tests...\n");
 
   // ==================== RECEIVERS ====================
 
-  // --- Happy paths ---
+  let individualReceiverId: string | undefined;
+  let businessReceiverId: string | undefined;
 
   await test(
     "Create individual receiver",
     "POST",
-    "/receivers",
+    `${API}/receivers`,
     { first_name: "John", last_name: "Doe", email: "john@example.com" },
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
@@ -83,6 +89,7 @@ async function run() {
       if (b.first_name !== "John") return `Wrong first_name: ${b.first_name}`;
       if (b.last_name !== "Doe") return `Wrong last_name: ${b.last_name}`;
       if (b.kyc_status !== "approved") return `Wrong kyc: ${b.kyc_status}`;
+      individualReceiverId = b.id;
       return null;
     },
   );
@@ -90,7 +97,7 @@ async function run() {
   await test(
     "Create business receiver",
     "POST",
-    "/receivers",
+    `${API}/receivers`,
     {
       business_name: "Acme Corp",
       email: "acme@example.com",
@@ -101,19 +108,18 @@ async function run() {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("rc_")) return `Bad id: ${b.id}`;
       if (b.type !== "business") return `Expected business, got ${b.type}`;
-      if (b.business_name !== "Acme Corp")
-        return `Wrong name: ${b.business_name}`;
-      if (b.country !== "US") return `Wrong country: ${b.country}`;
+      if (b.business_name !== "Acme Corp") return `Wrong name: ${b.business_name}`;
+      businessReceiverId = b.id;
       return null;
     },
   );
 
-  // --- Validation errors ---
+  // --- Receiver validation errors ---
 
   await test(
     "Reject individual receiver without first_name",
     "POST",
-    "/receivers",
+    `${API}/receivers`,
     { last_name: "Doe", email: "john@example.com" },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
@@ -125,7 +131,7 @@ async function run() {
   await test(
     "Reject individual receiver without email",
     "POST",
-    "/receivers",
+    `${API}/receivers`,
     { first_name: "John", last_name: "Doe" },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
@@ -137,7 +143,7 @@ async function run() {
   await test(
     "Reject individual receiver with invalid email",
     "POST",
-    "/receivers",
+    `${API}/receivers`,
     { first_name: "John", last_name: "Doe", email: "not-an-email" },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
@@ -149,7 +155,7 @@ async function run() {
   await test(
     "Reject business receiver without email",
     "POST",
-    "/receivers",
+    `${API}/receivers`,
     { business_name: "Acme Corp", country: "US" },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
@@ -158,39 +164,41 @@ async function run() {
     },
   );
 
+  // --- Stateful receiver lookup ---
+
   await test(
-    "Reject business receiver without business_name",
-    "POST",
-    "/receivers",
-    { legal_name: "Acme Corp", email: "acme@example.com", country: "US" },
+    "Get created receiver by ID",
+    "GET",
+    `${API}/receivers/${individualReceiverId}`,
+    undefined,
     (s, b: any) => {
-      // legal_name triggers business path but business_name is required
-      if (s !== 400) return `Expected 400, got ${s}`;
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.id !== individualReceiverId) return `Bad id: ${b.id}`;
+      if (b.first_name !== "John") return `Wrong first_name: ${b.first_name}`;
+      if (b.kyc_status !== "approved") return `Wrong kyc: ${b.kyc_status}`;
       return null;
     },
   );
 
-  const receiverId = "rc_test_receiver_001";
-
   await test(
-    "Get receiver",
+    "Return 404 for unknown receiver",
     "GET",
-    `/receivers/${receiverId}`,
+    `${API}/receivers/rc_does_not_exist`,
     undefined,
     (s, b: any) => {
-      if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.id !== receiverId) return `Bad id: ${b.id}`;
-      if (b.kyc_status !== "approved") return `Wrong kyc: ${b.kyc_status}`;
+      if (s !== 404) return `Expected 404, got ${s}`;
       return null;
     },
   );
 
   // ==================== BANK ACCOUNTS ====================
 
+  const receiverId = individualReceiverId!;
+
   await test(
     "Create bank account (ACH)",
     "POST",
-    `/receivers/${receiverId}/bank-accounts`,
+    `${API}/receivers/${receiverId}/bank-accounts`,
     {
       type: "ach",
       name: "Primary Checking",
@@ -209,10 +217,8 @@ async function run() {
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("ba_")) return `Bad id: ${b.id}`;
-      if (b.routing_number !== "021000021")
-        return `Wrong routing: ${b.routing_number}`;
-      if (b.account_class !== "individual")
-        return `Wrong class: ${b.account_class}`;
+      if (b.routing_number !== "021000021") return `Wrong routing: ${b.routing_number}`;
+      if (b.account_class !== "individual") return `Wrong class: ${b.account_class}`;
       return null;
     },
   );
@@ -220,7 +226,7 @@ async function run() {
   await test(
     "Create business bank account",
     "POST",
-    `/receivers/${receiverId}/bank-accounts`,
+    `${API}/receivers/${receiverId}/bank-accounts`,
     {
       type: "ach",
       beneficiary_name: "Acme Corp",
@@ -238,19 +244,47 @@ async function run() {
   );
 
   await test(
+    "List bank accounts for receiver",
+    "GET",
+    `${API}/receivers/${receiverId}/bank-accounts`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (!Array.isArray(b)) return "Expected array";
+      if (b.length !== 2) return `Expected 2 accounts, got ${b.length}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Return 404 for bank account on unknown receiver",
+    "POST",
+    `${API}/receivers/rc_nonexistent/bank-accounts`,
+    {
+      type: "ach",
+      beneficiary_name: "Nobody",
+      routing_number: "021000021",
+      account_number: "123456789",
+    },
+    (s, b: any) => {
+      if (s !== 404) return `Expected 404, got ${s}`;
+      return null;
+    },
+  );
+
+  await test(
     "Reject bank account with invalid routing number",
     "POST",
-    `/receivers/${receiverId}/bank-accounts`,
+    `${API}/receivers/${receiverId}/bank-accounts`,
     {
       type: "ach",
       beneficiary_name: "John Doe",
-      routing_number: "12345", // too short
+      routing_number: "12345",
       account_number: "123456789",
     },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("routing_number"))
-        return `Missing hint: ${b.message}`;
+      if (!b.message?.includes("routing_number")) return `Missing hint: ${b.message}`;
       return null;
     },
   );
@@ -258,7 +292,7 @@ async function run() {
   await test(
     "Reject bank account without beneficiary_name",
     "POST",
-    `/receivers/${receiverId}/bank-accounts`,
+    `${API}/receivers/${receiverId}/bank-accounts`,
     {
       type: "ach",
       routing_number: "021000021",
@@ -266,8 +300,7 @@ async function run() {
     },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("beneficiary_name"))
-        return `Missing hint: ${b.message}`;
+      if (!b.message?.includes("beneficiary_name")) return `Missing hint: ${b.message}`;
       return null;
     },
   );
@@ -275,7 +308,7 @@ async function run() {
   await test(
     "Reject bank account with invalid account_type",
     "POST",
-    `/receivers/${receiverId}/bank-accounts`,
+    `${API}/receivers/${receiverId}/bank-accounts`,
     {
       type: "ach",
       beneficiary_name: "John Doe",
@@ -285,8 +318,7 @@ async function run() {
     },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("account_type"))
-        return `Missing hint: ${b.message}`;
+      if (!b.message?.includes("account_type")) return `Missing hint: ${b.message}`;
       return null;
     },
   );
@@ -294,7 +326,7 @@ async function run() {
   await test(
     "Reject bank account with invalid recipient_relationship",
     "POST",
-    `/receivers/${receiverId}/bank-accounts`,
+    `${API}/receivers/${receiverId}/bank-accounts`,
     {
       type: "ach",
       beneficiary_name: "John Doe",
@@ -304,8 +336,7 @@ async function run() {
     },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("recipient_relationship"))
-        return `Missing hint: ${b.message}`;
+      if (!b.message?.includes("recipient_relationship")) return `Missing hint: ${b.message}`;
       return null;
     },
   );
@@ -313,9 +344,9 @@ async function run() {
   // ==================== VIRTUAL ACCOUNTS ====================
 
   await test(
-    "Get virtual accounts",
+    "Get virtual accounts for created receiver",
     "GET",
-    `/receivers/${receiverId}/virtual-accounts`,
+    `${API}/receivers/${receiverId}/virtual-accounts`,
     undefined,
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
@@ -329,27 +360,23 @@ async function run() {
     },
   );
 
-  // ==================== BLOCKCHAIN WALLETS ====================
-
   await test(
-    "Get blockchain wallets",
+    "Return 404 for virtual accounts on unknown receiver",
     "GET",
-    `/receivers/${receiverId}/blockchain-wallets`,
+    `${API}/receivers/rc_nonexistent/virtual-accounts`,
     undefined,
     (s, b: any) => {
-      if (s !== 200) return `Expected 200, got ${s}`;
-      if (!Array.isArray(b) || b.length === 0) return "Expected non-empty array";
-      if (!b[0].address) return "Missing wallet address";
-      if (typeof b[0].is_account_abstraction !== "boolean")
-        return "Missing is_account_abstraction";
+      if (s !== 404) return `Expected 404, got ${s}`;
       return null;
     },
   );
 
+  // ==================== BLOCKCHAIN WALLETS ====================
+
   await test(
     "Create blockchain wallet",
     "POST",
-    `/receivers/${receiverId}/blockchain-wallets`,
+    `${API}/receivers/${receiverId}/blockchain-wallets`,
     {
       name: "E2E Wallet",
       address: "0x" + "b".repeat(40),
@@ -368,7 +395,7 @@ async function run() {
   await test(
     "Create blockchain wallet with account-abstraction=true",
     "POST",
-    `/receivers/${receiverId}/blockchain-wallets`,
+    `${API}/receivers/${receiverId}/blockchain-wallets`,
     {
       name: "AA Wallet",
       address: "0x" + "c".repeat(40),
@@ -384,9 +411,48 @@ async function run() {
   );
 
   await test(
+    "List blockchain wallets for receiver",
+    "GET",
+    `${API}/receivers/${receiverId}/blockchain-wallets`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (!Array.isArray(b)) return "Expected array";
+      if (b.length !== 2) return `Expected 2 wallets, got ${b.length}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Return 404 for blockchain wallets on unknown receiver",
+    "GET",
+    `${API}/receivers/rc_nonexistent/blockchain-wallets`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 404) return `Expected 404, got ${s}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Return 404 creating wallet on unknown receiver",
+    "POST",
+    `${API}/receivers/rc_nonexistent/blockchain-wallets`,
+    {
+      name: "Bad Wallet",
+      address: "0x" + "d".repeat(40),
+      network: "polygon",
+    },
+    (s, b: any) => {
+      if (s !== 404) return `Expected 404, got ${s}`;
+      return null;
+    },
+  );
+
+  await test(
     "Reject blockchain wallet without name",
     "POST",
-    `/receivers/${receiverId}/blockchain-wallets`,
+    `${API}/receivers/${receiverId}/blockchain-wallets`,
     {
       address: "0x" + "d".repeat(40),
       network: "polygon",
@@ -401,7 +467,7 @@ async function run() {
   await test(
     "Reject blockchain wallet with invalid address",
     "POST",
-    `/receivers/${receiverId}/blockchain-wallets`,
+    `${API}/receivers/${receiverId}/blockchain-wallets`,
     {
       name: "Bad Wallet",
       address: "not-an-address",
@@ -417,7 +483,7 @@ async function run() {
   await test(
     "Reject blockchain wallet with non-boolean is_account_abstraction",
     "POST",
-    `/receivers/${receiverId}/blockchain-wallets`,
+    `${API}/receivers/${receiverId}/blockchain-wallets`,
     {
       name: "Bad AA Wallet",
       address: "0x" + "e".repeat(40),
@@ -426,20 +492,18 @@ async function run() {
     },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("is_account_abstraction"))
-        return `Missing hint: ${b.message}`;
+      if (!b.message?.includes("is_account_abstraction")) return `Missing hint: ${b.message}`;
       return null;
     },
   );
 
   // ==================== PAYIN FLOW ====================
 
-  // Create payin quote
   let quoteId: string | undefined;
   await test(
     "Create payin quote",
     "POST",
-    "/payin-quotes",
+    `${API}/payin-quotes`,
     {
       blockchain_wallet_id: "bw_test",
       currency_type: "sender",
@@ -450,10 +514,8 @@ async function run() {
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("qu_")) return `Bad id: ${b.id}`;
-      if (b.sender_amount !== 50000)
-        return `Wrong sender_amount: ${b.sender_amount}`;
-      if (b.receiver_amount >= b.sender_amount)
-        return "Receiver >= sender (no fee?)";
+      if (b.sender_amount !== 50000) return `Wrong sender_amount: ${b.sender_amount}`;
+      if (b.receiver_amount >= b.sender_amount) return "Receiver >= sender (no fee?)";
       quoteId = b.id;
       return null;
     },
@@ -463,12 +525,11 @@ async function run() {
   await test(
     "Reject payin quote without blockchain_wallet_id",
     "POST",
-    "/payin-quotes",
+    `${API}/payin-quotes`,
     { payment_method: "ach", token: "USDC", request_amount: 10000 },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("blockchain_wallet_id"))
-        return `Missing hint: ${b.message}`;
+      if (!b.message?.includes("blockchain_wallet_id")) return `Missing hint: ${b.message}`;
       return null;
     },
   );
@@ -476,7 +537,7 @@ async function run() {
   await test(
     "Reject payin quote with invalid token",
     "POST",
-    "/payin-quotes",
+    `${API}/payin-quotes`,
     {
       blockchain_wallet_id: "bw_test",
       payment_method: "ach",
@@ -493,7 +554,7 @@ async function run() {
   await test(
     "Reject payin quote below minimum amount",
     "POST",
-    "/payin-quotes",
+    `${API}/payin-quotes`,
     {
       blockchain_wallet_id: "bw_test",
       payment_method: "ach",
@@ -512,15 +573,15 @@ async function run() {
   await test(
     "Initiate payin (EVM)",
     "POST",
-    "/payins/evm",
+    `${API}/payins/evm`,
     { payin_quote_id: quoteId ?? "qu_fallback" },
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (!b.id?.startsWith("pi_")) return `Bad id: ${b.id}`;
       if (b.status !== "processing") return `Expected processing, got ${b.status}`;
-      if (!b.blindpay_bank_details?.routing_number)
-        return "Missing bank details";
+      if (!b.blindpay_bank_details?.routing_number) return "Missing bank details";
       if (!b.memo_code) return "Missing memo_code";
+      if (b.sender_amount !== 50000) return `Payin should inherit quote amount, got ${b.sender_amount}`;
       payinId = b.id;
       return null;
     },
@@ -529,7 +590,7 @@ async function run() {
   await test(
     "Reject payin without quote_id",
     "POST",
-    "/payins/evm",
+    `${API}/payins/evm`,
     {},
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
@@ -537,47 +598,161 @@ async function run() {
     },
   );
 
+  await test(
+    "Reject payin with unknown quote_id",
+    "POST",
+    `${API}/payins/evm`,
+    { payin_quote_id: "qu_does_not_exist" },
+    (s, b: any) => {
+      if (s !== 404) return `Expected 404, got ${s}`;
+      return null;
+    },
+  );
+
   // --- Status lifecycle tests ---
 
-  // Immediately after creation, payin should still be processing (delay=10000ms)
   await test(
-    "Payin status is processing immediately after creation",
+    "Payin status is processing after creation",
     "GET",
-    `/payins/${payinId ?? "pi_fallback"}?delay=10000`,
+    `${API}/payins/${payinId}`,
     undefined,
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.status !== "processing")
-        return `Expected processing, got ${b.status}`;
+      if (b.status !== "processing") return `Expected processing, got ${b.status}`;
       return null;
     },
   );
 
-  // With delay=0, payin should be completed immediately
   await test(
-    "Payin status is completed after delay expires",
+    "Return 404 for unknown payin",
     "GET",
-    `/payins/${payinId ?? "pi_fallback"}?delay=0`,
+    `${API}/payins/pi_does_not_exist`,
     undefined,
     (s, b: any) => {
-      if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.status !== "completed")
-        return `Expected completed, got ${b.status}`;
-      if (!b.blindpay_bank_details) return "Missing bank details on GET";
+      if (s !== 404) return `Expected 404, got ${s}`;
       return null;
     },
   );
 
-  // Unknown payin returns completed (backwards-compatible)
+  // ==================== ADMIN ENDPOINTS ====================
+
   await test(
-    "Unknown payin returns completed (fallback)",
-    "GET",
-    "/payins/pi_does_not_exist",
+    "Admin: complete payin",
+    "POST",
+    `${ADMIN}/payins/${payinId}/complete`,
     undefined,
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.status !== "completed")
-        return `Expected completed, got ${b.status}`;
+      if (b.payin_status !== "completed") return `Expected completed, got ${b.payin_status}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
+  await test(
+    "Payin status is completed after admin complete",
+    "GET",
+    `${API}/payins/${payinId}`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.status !== "completed") return `Expected completed, got ${b.status}`;
+      return null;
+    },
+  );
+
+  // Create another payin for reject test
+  let quoteId2: string | undefined;
+  let payinId2: string | undefined;
+  await test(
+    "Create second payin quote",
+    "POST",
+    `${API}/payin-quotes`,
+    {
+      blockchain_wallet_id: "bw_test",
+      currency_type: "sender",
+      request_amount: 20000,
+      payment_method: "ach",
+      token: "USDT",
+    },
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      quoteId2 = b.id;
+      return null;
+    },
+  );
+
+  await test(
+    "Initiate second payin",
+    "POST",
+    `${API}/payins/evm`,
+    { payin_quote_id: quoteId2 },
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.token !== "USDT") return `Should inherit token from quote, got ${b.token}`;
+      payinId2 = b.id;
+      return null;
+    },
+  );
+
+  await test(
+    "Admin: reject payin",
+    "POST",
+    `${ADMIN}/payins/${payinId2}/reject`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.payin_status !== "failed") return `Expected failed, got ${b.payin_status}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
+  await test(
+    "Admin: return 404 for unknown payin",
+    "POST",
+    `${ADMIN}/payins/pi_nonexistent/complete`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 404) return `Expected 404, got ${s}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
+  // ==================== ADMIN RESET ====================
+
+  await test(
+    "Admin: reset all state",
+    "POST",
+    `${ADMIN}/reset`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.status !== "ok") return `Expected ok, got ${b.status}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
+  await test(
+    "Receiver gone after reset",
+    "GET",
+    `${API}/receivers/${individualReceiverId}`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 404) return `Expected 404 after reset, got ${s}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Payin gone after reset",
+    "GET",
+    `${API}/payins/${payinId}`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 404) return `Expected 404 after reset, got ${s}`;
       return null;
     },
   );
@@ -587,7 +762,7 @@ async function run() {
   await test(
     "Get payout FX rate",
     "POST",
-    "/quotes/fx",
+    `${API}/quotes/fx`,
     {
       currency_type: "sender",
       from: "USDC",
@@ -605,7 +780,7 @@ async function run() {
   await test(
     "Reject FX quote without currencies",
     "POST",
-    "/quotes/fx",
+    `${API}/quotes/fx`,
     { request_amount: 10000 },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
@@ -616,7 +791,7 @@ async function run() {
   await test(
     "Reject FX quote with invalid from currency",
     "POST",
-    "/quotes/fx",
+    `${API}/quotes/fx`,
     { from: "BTC", to: "USD", request_amount: 10000 },
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;

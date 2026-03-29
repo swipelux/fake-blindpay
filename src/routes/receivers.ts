@@ -1,5 +1,13 @@
 import { Hono } from "hono";
 import { genId } from "../ids";
+import {
+  storeReceiver,
+  getReceiver,
+  storeBankAccount,
+  getBankAccounts,
+  storeBlockchainWallet,
+  getBlockchainWallets,
+} from "../store";
 
 const app = new Hono();
 
@@ -26,33 +34,22 @@ function validateEmail(email: unknown): boolean {
 app.post("/", async (c) => {
   const body = await c.req.json();
   const isBusiness = !!body.business_name || !!body.legal_name;
-  const instanceId = c.req.param("instanceId");
+  const instanceId = c.req.param("instanceId") ?? "inst_unknown";
   const now = new Date().toISOString();
   const id = genId("receiver");
 
   if (isBusiness) {
-    // Business receiver validation
-    const err = requireFields(body, [
-      "business_name",
-      "email",
-      "country",
-    ]);
+    const err = requireFields(body, ["business_name", "email", "country"]);
     if (err) {
-      return c.json(
-        { error: "validation_error", message: err },
-        400,
-      );
+      return c.json({ error: "validation_error", message: err }, 400);
     }
     if (!validateEmail(body.email)) {
-      return c.json(
-        { error: "validation_error", message: "Invalid email format" },
-        400,
-      );
+      return c.json({ error: "validation_error", message: "Invalid email format" }, 400);
     }
 
-    return c.json({
+    const receiver = {
       id,
-      type: "business",
+      type: "business" as const,
       business_name: body.business_name ?? body.legal_name,
       legal_name: body.legal_name ?? body.business_name,
       email: body.email,
@@ -65,31 +62,23 @@ app.post("/", async (c) => {
       instance_id: instanceId,
       created_at: now,
       updated_at: now,
-    });
+    };
+    storeReceiver(receiver);
+    return c.json(receiver);
   }
 
-  // Individual receiver validation
-  const err = requireFields(body, [
-    "first_name",
-    "last_name",
-    "email",
-  ]);
+  // Individual receiver
+  const err = requireFields(body, ["first_name", "last_name", "email"]);
   if (err) {
-    return c.json(
-      { error: "validation_error", message: err },
-      400,
-    );
+    return c.json({ error: "validation_error", message: err }, 400);
   }
   if (!validateEmail(body.email)) {
-    return c.json(
-      { error: "validation_error", message: "Invalid email format" },
-      400,
-    );
+    return c.json({ error: "validation_error", message: "Invalid email format" }, 400);
   }
 
-  return c.json({
+  const receiver = {
     id,
-    type: "individual",
+    type: "individual" as const,
     first_name: body.first_name,
     last_name: body.last_name,
     email: body.email,
@@ -101,34 +90,30 @@ app.post("/", async (c) => {
     instance_id: instanceId,
     created_at: now,
     updated_at: now,
-  });
+  };
+  storeReceiver(receiver);
+  return c.json(receiver);
 });
 
 // GET /v1/instances/:instanceId/receivers/:receiverId
 app.get("/:receiverId", (c) => {
-  const now = new Date().toISOString();
-  return c.json({
-    id: c.req.param("receiverId"),
-    type: "individual",
-    first_name: "Test",
-    last_name: "User",
-    email: "test@example.com",
-    country: "US",
-    status: "active",
-    kyc_status: "approved",
-    instance_id: c.req.param("instanceId"),
-    created_at: now,
-    updated_at: now,
-  });
+  const receiverId = c.req.param("receiverId");
+  const receiver = getReceiver(receiverId);
+  if (!receiver) {
+    return c.json({ error: "not_found", message: `Receiver ${receiverId} not found` }, 404);
+  }
+  return c.json(receiver);
 });
 
 // POST /v1/instances/:instanceId/receivers/:receiverId/bank-accounts
 app.post("/:receiverId/bank-accounts", async (c) => {
   const body = await c.req.json();
   const receiverId = c.req.param("receiverId");
-  const now = new Date().toISOString();
 
-  // Validate required fields
+  if (!getReceiver(receiverId)) {
+    return c.json({ error: "not_found", message: `Receiver ${receiverId} not found` }, 404);
+  }
+
   const err = requireFields(body, [
     "type",
     "beneficiary_name",
@@ -139,68 +124,43 @@ app.post("/:receiverId/bank-accounts", async (c) => {
     return c.json({ error: "validation_error", message: err }, 400);
   }
 
-  // Validate routing number format (9 digits)
   if (!/^\d{9}$/.test(body.routing_number)) {
     return c.json(
-      {
-        error: "validation_error",
-        message: "routing_number must be exactly 9 digits",
-      },
+      { error: "validation_error", message: "routing_number must be exactly 9 digits" },
       400,
     );
   }
 
-  // Validate account type
   const validAccountTypes = ["checking", "saving"];
   if (body.account_type && !validAccountTypes.includes(body.account_type)) {
     return c.json(
-      {
-        error: "validation_error",
-        message: `account_type must be one of: ${validAccountTypes.join(", ")}`,
-      },
+      { error: "validation_error", message: `account_type must be one of: ${validAccountTypes.join(", ")}` },
       400,
     );
   }
 
-  // Validate account class
   const validAccountClasses = ["individual", "business"];
   if (body.account_class && !validAccountClasses.includes(body.account_class)) {
     return c.json(
-      {
-        error: "validation_error",
-        message: `account_class must be one of: ${validAccountClasses.join(", ")}`,
-      },
+      { error: "validation_error", message: `account_class must be one of: ${validAccountClasses.join(", ")}` },
       400,
     );
   }
 
-  // Validate recipient relationship
   const validRelationships = [
-    "first_party",
-    "employee",
-    "independent_contractor",
-    "vendor_or_supplier",
-    "subsidiary_or_affiliate",
-    "merchant_or_partner",
-    "customer",
-    "landlord",
-    "family",
-    "other",
+    "first_party", "employee", "independent_contractor", "vendor_or_supplier",
+    "subsidiary_or_affiliate", "merchant_or_partner", "customer", "landlord",
+    "family", "other",
   ];
-  if (
-    body.recipient_relationship &&
-    !validRelationships.includes(body.recipient_relationship)
-  ) {
+  if (body.recipient_relationship && !validRelationships.includes(body.recipient_relationship)) {
     return c.json(
-      {
-        error: "validation_error",
-        message: `recipient_relationship must be one of: ${validRelationships.join(", ")}`,
-      },
+      { error: "validation_error", message: `recipient_relationship must be one of: ${validRelationships.join(", ")}` },
       400,
     );
   }
 
-  return c.json({
+  const now = new Date().toISOString();
+  const account = {
     id: genId("bankAccount"),
     type: body.type,
     name: body.name ?? `${body.beneficiary_name} - ${body.type?.toUpperCase()}`,
@@ -219,12 +179,32 @@ app.post("/:receiverId/bank-accounts", async (c) => {
     postal_code: body.postal_code ?? "",
     receiver_id: receiverId,
     created_at: now,
-  });
+  };
+  storeBankAccount(account);
+  return c.json(account);
+});
+
+// GET /v1/instances/:instanceId/receivers/:receiverId/bank-accounts
+app.get("/:receiverId/bank-accounts", (c) => {
+  const receiverId = c.req.param("receiverId");
+  if (!getReceiver(receiverId)) {
+    return c.json({ error: "not_found", message: `Receiver ${receiverId} not found` }, 404);
+  }
+  return c.json(getBankAccounts(receiverId));
 });
 
 // GET /v1/instances/:instanceId/receivers/:receiverId/virtual-accounts
 app.get("/:receiverId/virtual-accounts", (c) => {
   const receiverId = c.req.param("receiverId");
+  if (!getReceiver(receiverId)) {
+    return c.json({ error: "not_found", message: `Receiver ${receiverId} not found` }, 404);
+  }
+
+  // Virtual accounts are derived from receiver — one per receiver
+  const wallets = getBlockchainWallets(receiverId);
+  const blockchainWalletId = wallets.length > 0
+    ? wallets[0].id
+    : `bw_${receiverId.slice(3, 15)}`;
 
   return c.json([
     {
@@ -247,7 +227,7 @@ app.get("/:receiverId/virtual-accounts", (c) => {
         },
       },
       token: "USDC",
-      blockchain_wallet_id: `bw_${receiverId.slice(3, 15)}`,
+      blockchain_wallet_id: blockchainWalletId,
       receiver_id: receiverId,
     },
   ]);
@@ -256,18 +236,10 @@ app.get("/:receiverId/virtual-accounts", (c) => {
 // GET /v1/instances/:instanceId/receivers/:receiverId/blockchain-wallets
 app.get("/:receiverId/blockchain-wallets", (c) => {
   const receiverId = c.req.param("receiverId");
-
-  return c.json([
-    {
-      id: `bw_${receiverId.slice(3, 15)}`,
-      name: "Primary Wallet",
-      network: "polygon",
-      address: "0x" + "a".repeat(40),
-      is_account_abstraction: false,
-      receiver_id: receiverId,
-      signature_tx_hash: null,
-    },
-  ]);
+  if (!getReceiver(receiverId)) {
+    return c.json({ error: "not_found", message: `Receiver ${receiverId} not found` }, 404);
+  }
+  return c.json(getBlockchainWallets(receiverId));
 });
 
 // POST /v1/instances/:instanceId/receivers/:receiverId/blockchain-wallets
@@ -275,38 +247,33 @@ app.post("/:receiverId/blockchain-wallets", async (c) => {
   const body = await c.req.json();
   const receiverId = c.req.param("receiverId");
 
-  // Validate required fields
+  if (!getReceiver(receiverId)) {
+    return c.json({ error: "not_found", message: `Receiver ${receiverId} not found` }, 404);
+  }
+
   const err = requireFields(body, ["name", "address", "network"]);
   if (err) {
     return c.json({ error: "validation_error", message: err }, 400);
   }
 
-  // Validate is_account_abstraction is a boolean when provided
   if (
     body.is_account_abstraction !== undefined &&
     typeof body.is_account_abstraction !== "boolean"
   ) {
     return c.json(
-      {
-        error: "validation_error",
-        message: "is_account_abstraction must be a boolean",
-      },
+      { error: "validation_error", message: "is_account_abstraction must be a boolean" },
       400,
     );
   }
 
-  // Validate address looks like an EVM address
   if (!/^0x[a-fA-F0-9]{40}$/.test(body.address)) {
     return c.json(
-      {
-        error: "validation_error",
-        message: "address must be a valid EVM address (0x + 40 hex chars)",
-      },
+      { error: "validation_error", message: "address must be a valid EVM address (0x + 40 hex chars)" },
       400,
     );
   }
 
-  return c.json({
+  const wallet = {
     id: genId("blockchainWallet"),
     name: body.name,
     network: body.network,
@@ -314,7 +281,9 @@ app.post("/:receiverId/blockchain-wallets", async (c) => {
     is_account_abstraction: body.is_account_abstraction ?? false,
     receiver_id: receiverId,
     signature_tx_hash: null,
-  });
+  };
+  storeBlockchainWallet(wallet);
+  return c.json(wallet);
 });
 
 export default app;

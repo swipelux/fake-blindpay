@@ -4,6 +4,7 @@ import { logger } from "hono/logger";
 import payins from "./routes/payins";
 import quotes from "./routes/quotes";
 import receivers from "./routes/receivers";
+import admin from "./routes/admin";
 
 const app = new Hono();
 
@@ -27,8 +28,16 @@ app.route("/v1/instances/:instanceId", payins);
 app.route("/v1/instances/:instanceId/quotes", quotes);
 app.route("/v1/instances/:instanceId/receivers", receivers);
 
+// Admin/test helpers (no auth)
+app.route("/admin", admin);
+
 const port = parseInt(process.env.PORT ?? "3001", 10);
 
 serve({ fetch: app.fetch, port }, () => {
   console.log(`fake-blindpay listening on port ${port}`);
+  if (process.env.WEBHOOK_URL) {
+    console.log(`Webhook dispatch target: ${process.env.WEBHOOK_URL}`);
+  } else {
+    console.log("WEBHOOK_URL not set — webhook dispatch disabled");
+  }
 });

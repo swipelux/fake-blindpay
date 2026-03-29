@@ -16,26 +16,18 @@ app.post("/fx", async (c) => {
   const validCurrencies = ["USDC", "USDT", "USDB", "USD", "EUR"];
   if (!validCurrencies.includes(body.from)) {
     return c.json(
-      {
-        error: "validation_error",
-        message: `from must be one of: ${validCurrencies.join(", ")}`,
-      },
+      { error: "validation_error", message: `from must be one of: ${validCurrencies.join(", ")}` },
       400,
     );
   }
   if (!validCurrencies.includes(body.to)) {
     return c.json(
-      {
-        error: "validation_error",
-        message: `to must be one of: ${validCurrencies.join(", ")}`,
-      },
+      { error: "validation_error", message: `to must be one of: ${validCurrencies.join(", ")}` },
       400,
     );
   }
 
   const requestAmount: number = body.request_amount ?? 10000;
-
-  // 1:1 rate with 1% fee for mock
   const fee = Math.round(requestAmount * 0.01);
   const resultAmount = requestAmount - fee;
 
