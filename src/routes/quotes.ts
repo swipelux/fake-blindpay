@@ -13,7 +13,7 @@ app.post("/fx", async (c) => {
     );
   }
 
-  const validCurrencies = ["USDC", "USDT", "USDB", "USD", "EUR"];
+  const validCurrencies = ["USDC", "USDT", "USDB", "USD", "EUR", "BRL"];
   if (!validCurrencies.includes(body.from)) {
     return c.json(
       { error: "validation_error", message: `from must be one of: ${validCurrencies.join(", ")}` },

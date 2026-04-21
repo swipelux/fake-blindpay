@@ -36,12 +36,12 @@ function buildPayinResponse(
   createdAt: string,
   updatedAt: string,
 ) {
-  return {
+  const base = {
     id,
     status,
     payment_method: paymentMethod,
     token,
-    currency: "USD",
+    currency: paymentMethod === "pix" ? "BRL" : "USD",
     sender_amount: senderAmount,
     receiver_amount: receiverAmount,
     memo_code: quoteId,
@@ -49,8 +49,8 @@ function buildPayinResponse(
     payin_quote_id: quoteId,
     receiver_id: "rc_fake_receiver",
     instance_id: instanceId,
-    commercial_quotation: 100,
-    blindpay_quotation: 100,
+    commercial_quotation: paymentMethod === "pix" ? 500 : 100,
+    blindpay_quotation: paymentMethod === "pix" ? 499 : 100,
     total_fee_amount: 0,
     transaction_fee_amount: 0,
     partner_fee_amount: 0,
@@ -58,6 +58,17 @@ function buildPayinResponse(
     created_at: createdAt,
     updated_at: updatedAt,
   };
+
+  // PIX payins return a pix_code (EMV/BR Code) and an expiry timestamp
+  if (paymentMethod === "pix") {
+    return {
+      ...base,
+      pix_code: `00020101021226840014br.gov.bcb.pix0136fake-${id}`,
+      expires_at: Date.now() + 5 * 60 * 1000,
+    };
+  }
+
+  return base;
 }
 
 // POST /v1/instances/:instanceId/payin-quotes
@@ -103,6 +114,10 @@ app.post("/payin-quotes", async (c) => {
   const receiverAmount = requestAmount - fee;
   const quoteId = genId("quote");
 
+  // PIX quotes use BRL→USDC rate (commercial_quotation = rate * 100)
+  const isPix = body.payment_method === "pix";
+  const commercialQuotation = isPix ? 500 : 100;
+
   const quote = {
     id: quoteId,
     blockchain_wallet_id: body.blockchain_wallet_id,
@@ -113,8 +128,8 @@ app.post("/payin-quotes", async (c) => {
     flat_fee: fee,
     payment_method: body.payment_method,
     token: body.token,
-    commercial_quotation: 100,
-    blindpay_quotation: 100,
+    commercial_quotation: commercialQuotation,
+    blindpay_quotation: commercialQuotation - 1,
     billing_fee_amount: 0,
     partner_fee_amount: 0,
     expires_at: Date.now() + 5 * 60 * 1000,
@@ -128,8 +143,8 @@ app.post("/payin-quotes", async (c) => {
     flat_fee: fee,
     billing_fee_amount: 0,
     partner_fee_amount: 0,
-    commercial_quotation: 100,
-    blindpay_quotation: 100,
+    commercial_quotation: commercialQuotation,
+    blindpay_quotation: commercialQuotation - 1,
     expires_at: quote.expires_at,
   });
 });
