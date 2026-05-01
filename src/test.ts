@@ -331,6 +331,60 @@ async function run() {
     },
   );
 
+  // ==================== ADMIN: PATCH /receivers/:id ====================
+
+  // Seed a fresh pending receiver to flip and a fresh approved receiver to reject.
+  let pendingReceiverId: string | undefined;
+  await test(
+    "Seed pending receiver for PATCH journey",
+    "POST",
+    `${API}/receivers`,
+    { first_name: "Flip", last_name: "Me", email: "flip@example.com", kyc_status: "verifying" },
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      pendingReceiverId = b.id;
+      return null;
+    },
+  );
+
+  await test(
+    "Admin: flip kyc_status from verifying to approved",
+    "PATCH",
+    `${ADMIN}/receivers/${pendingReceiverId!}`,
+    { kyc_status: "approved" },
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.kyc_status !== "approved") return `Expected approved, got ${b.kyc_status}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
+  await test(
+    "Admin: PATCH unknown receiver → 404",
+    "PATCH",
+    `${ADMIN}/receivers/rc_nonexistent`,
+    { kyc_status: "approved" },
+    (s, b: any) => {
+      if (s !== 404) return `Expected 404, got ${s}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
+  await test(
+    "Admin: reject invalid kyc_status on PATCH",
+    "PATCH",
+    `${ADMIN}/receivers/${pendingReceiverId!}`,
+    { kyc_status: "garbage" },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("kyc_status")) return `Missing hint: ${b.message}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
   // ==================== BANK ACCOUNTS ====================
 
   const receiverId = individualReceiverId!;

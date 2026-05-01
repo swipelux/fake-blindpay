@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { updatePayinStatus, clearAll, type PayinStatus } from "../store";
+import { updatePayinStatus, clearAll, updateReceiver, RECEIVER_KYC_STATUSES, RECEIVER_KYC_TYPES, type PayinStatus } from "../store";
 
 const app = new Hono();
 
@@ -91,6 +91,33 @@ app.post("/payins/:id/refund", async (c) => {
 app.post("/reset", (c) => {
   clearAll();
   return c.json({ status: "ok", message: "All state cleared" });
+});
+
+app.patch("/receivers/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json().catch(() => ({}));
+
+  if (body.kyc_status !== undefined && !(RECEIVER_KYC_STATUSES as readonly string[]).includes(body.kyc_status)) {
+    return c.json(
+      { error: "validation_error", message: `kyc_status must be one of: ${RECEIVER_KYC_STATUSES.join(", ")}` },
+      400,
+    );
+  }
+  if (body.kyc_type !== undefined && !(RECEIVER_KYC_TYPES as readonly string[]).includes(body.kyc_type)) {
+    return c.json(
+      { error: "validation_error", message: `kyc_type must be one of: ${RECEIVER_KYC_TYPES.join(", ")}` },
+      400,
+    );
+  }
+
+  const updated = updateReceiver(id, {
+    ...(body.kyc_status ? { kyc_status: body.kyc_status } : {}),
+    ...(body.kyc_type ? { kyc_type: body.kyc_type } : {}),
+  });
+  if (!updated) {
+    return c.json({ error: "not_found", message: `Receiver ${id} not found` }, 404);
+  }
+  return c.json(updated);
 });
 
 export default app;
