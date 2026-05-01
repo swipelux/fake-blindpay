@@ -245,6 +245,23 @@ async function run() {
     },
   );
 
+  await test(
+    "Reject invalid kyc_type",
+    "POST",
+    `${API}/receivers`,
+    {
+      first_name: "Bad",
+      last_name: "Type",
+      email: "badtype@example.com",
+      kyc_type: "totally_invalid",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("kyc_type")) return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
   // ==================== BANK ACCOUNTS ====================
 
   const receiverId = individualReceiverId!;
