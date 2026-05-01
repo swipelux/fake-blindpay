@@ -7,6 +7,10 @@ import {
   getBankAccounts,
   storeBlockchainWallet,
   getBlockchainWallets,
+  RECEIVER_KYC_STATUSES,
+  RECEIVER_KYC_TYPES,
+  type ReceiverKycStatus,
+  type ReceiverKycType,
 } from "../store";
 
 const app = new Hono();
@@ -38,6 +42,35 @@ app.post("/", async (c) => {
   const now = new Date().toISOString();
   const id = genId("receiver");
 
+  // Validate kyc_status if provided (applies to both individual and business)
+  if (body.kyc_status !== undefined && !RECEIVER_KYC_STATUSES.includes(body.kyc_status)) {
+    return c.json(
+      {
+        error: "validation_error",
+        message: `kyc_status must be one of: ${RECEIVER_KYC_STATUSES.join(", ")}`,
+      },
+      400,
+    );
+  }
+
+  // Validate kyc_type if provided (applies to both individual and business)
+  if (body.kyc_type !== undefined && !RECEIVER_KYC_TYPES.includes(body.kyc_type)) {
+    return c.json(
+      {
+        error: "validation_error",
+        message: `kyc_type must be one of: ${RECEIVER_KYC_TYPES.join(", ")}`,
+      },
+      400,
+    );
+  }
+
+  const kycStatus: ReceiverKycStatus = RECEIVER_KYC_STATUSES.includes(body.kyc_status)
+    ? body.kyc_status
+    : "approved";
+  const kycType: ReceiverKycType = RECEIVER_KYC_TYPES.includes(body.kyc_type)
+    ? body.kyc_type
+    : "standard";
+
   if (isBusiness) {
     const err = requireFields(body, ["business_name", "email", "country"]);
     if (err) {
@@ -58,7 +91,8 @@ app.post("/", async (c) => {
       tax_id: body.tax_id ?? null,
       doing_business_as: body.doing_business_as ?? null,
       status: "active",
-      kyc_status: "approved",
+      kyc_status: kycStatus,
+      kyc_type: kycType,
       instance_id: instanceId,
       created_at: now,
       updated_at: now,
@@ -86,7 +120,8 @@ app.post("/", async (c) => {
     date_of_birth: body.date_of_birth ?? null,
     phone: body.phone ?? null,
     status: "active",
-    kyc_status: "approved",
+    kyc_status: kycStatus,
+    kyc_type: kycType,
     instance_id: instanceId,
     created_at: now,
     updated_at: now,

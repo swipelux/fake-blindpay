@@ -191,6 +191,60 @@ async function run() {
     },
   );
 
+  // ==================== RECEIVER LIST + KYC STATUS ====================
+
+  await test(
+    "Create receiver with kyc_status=verifying",
+    "POST",
+    `${API}/receivers`,
+    {
+      first_name: "Pending",
+      last_name: "Person",
+      email: "pending@example.com",
+      kyc_status: "verifying",
+    },
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.kyc_status !== "verifying") return `Expected verifying, got ${b.kyc_status}`;
+      if (b.kyc_type !== "standard") return `Expected default kyc_type=standard, got ${b.kyc_type}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Create receiver with custom kyc_type=enhanced",
+    "POST",
+    `${API}/receivers`,
+    {
+      first_name: "Enhanced",
+      last_name: "Person",
+      email: "enhanced@example.com",
+      kyc_type: "enhanced",
+    },
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.kyc_type !== "enhanced") return `Expected enhanced, got ${b.kyc_type}`;
+      return null;
+    },
+  );
+
+  await test(
+    "Reject invalid kyc_status",
+    "POST",
+    `${API}/receivers`,
+    {
+      first_name: "Bad",
+      last_name: "Status",
+      email: "bad@example.com",
+      kyc_status: "totally_invalid",
+    },
+    (s, b: any) => {
+      if (s !== 400) return `Expected 400, got ${s}`;
+      if (!b.message?.includes("kyc_status")) return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
   // ==================== BANK ACCOUNTS ====================
 
   const receiverId = individualReceiverId!;

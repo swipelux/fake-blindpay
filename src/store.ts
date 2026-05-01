@@ -2,6 +2,19 @@ import { genId } from "./ids";
 
 // ── Receiver ────────────────────────────────────────────────
 
+export const RECEIVER_KYC_STATUSES = [
+  "verifying",
+  "approved",
+  "rejected",
+  "deprecated",
+  "pending_review",
+  "awaiting_contract",
+] as const;
+export type ReceiverKycStatus = (typeof RECEIVER_KYC_STATUSES)[number];
+
+export const RECEIVER_KYC_TYPES = ["light", "standard", "enhanced"] as const;
+export type ReceiverKycType = (typeof RECEIVER_KYC_TYPES)[number];
+
 export interface Receiver {
   id: string;
   type: "individual" | "business";
@@ -17,7 +30,8 @@ export interface Receiver {
   tax_id?: string | null;
   doing_business_as?: string | null;
   status: string;
-  kyc_status: string;
+  kyc_status: ReceiverKycStatus;
+  kyc_type: ReceiverKycType;
   instance_id: string;
   created_at: string;
   updated_at: string;
@@ -111,6 +125,27 @@ export function storeReceiver(receiver: Receiver): void {
 
 export function getReceiver(id: string): Receiver | undefined {
   return receivers.get(id);
+}
+
+export function listReceivers(instanceId?: string): Receiver[] {
+  const all = Array.from(receivers.values());
+  if (!instanceId) return all;
+  return all.filter((r) => r.instance_id === instanceId);
+}
+
+export function updateReceiver(
+  id: string,
+  partial: Partial<Pick<Receiver, "kyc_status" | "kyc_type" | "updated_at">>,
+): Receiver | undefined {
+  const existing = receivers.get(id);
+  if (!existing) return undefined;
+  const updated: Receiver = {
+    ...existing,
+    ...partial,
+    updated_at: partial.updated_at ?? new Date().toISOString(),
+  };
+  receivers.set(id, updated);
+  return updated;
 }
 
 // ── Bank Accounts ───────────────────────────────────────────
