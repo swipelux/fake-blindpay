@@ -27,7 +27,7 @@ async function test(
   method: string,
   url: string,
   body?: unknown,
-  validate?: (status: number, body: unknown) => string | null,
+  validate?: (status: number, body: unknown) => string | null | Promise<string | null>,
   headers?: Record<string, string>,
 ) {
   try {
@@ -37,7 +37,7 @@ async function test(
       body: body ? JSON.stringify(body) : undefined,
     });
     const json = await res.json();
-    const err = validate?.(res.status, json) ?? null;
+    const err = (await validate?.(res.status, json)) ?? null;
     results.push({
       name,
       passed: !err,
@@ -258,6 +258,56 @@ async function run() {
     (s, b: any) => {
       if (s !== 400) return `Expected 400, got ${s}`;
       if (!b.message?.includes("kyc_type")) return `Missing hint: ${b.message}`;
+      return null;
+    },
+  );
+
+  await test(
+    "List receivers (object form with pagination)",
+    "GET",
+    `${API}/receivers?limit=50`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (!Array.isArray(b.data)) return "Expected b.data to be an array";
+      if (typeof b.pagination?.has_more !== "boolean") return "Missing pagination.has_more";
+      const statuses = b.data.map((r: any) => r.kyc_status).sort();
+      if (!statuses.includes("verifying")) return "verifying receiver missing from list";
+      return null;
+    },
+  );
+
+  await test(
+    "List receivers filtered by status=verifying",
+    "GET",
+    `${API}/receivers?status=verifying`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (!b.data.every((r: any) => r.kyc_status === "verifying")) {
+        return "Expected only verifying receivers in result";
+      }
+      return null;
+    },
+  );
+
+  await test(
+    "List receivers paginates with starting_after",
+    "GET",
+    `${API}/receivers?limit=10`,
+    undefined,
+    async (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.data.length < 2) return `Need >=2 receivers for pagination test, got ${b.data.length}`;
+      // Use limit=10 first to capture multiple receivers (state from earlier tests),
+      // then re-fetch with limit=1 + starting_after pointing to the first receiver to verify cursor advance.
+      const firstId = b.data[0].id;
+      const next = await fetch(`${API}/receivers?limit=10&starting_after=${firstId}`, { headers: HEADERS });
+      const nextBody: any = await next.json();
+      if (next.status !== 200) return `cursor request failed with ${next.status}`;
+      if (nextBody.data.find((r: any) => r.id === firstId)) {
+        return "Cursor did not advance — first id appeared in second page";
+      }
       return null;
     },
   );
