@@ -111,8 +111,8 @@ app.patch("/receivers/:id", async (c) => {
   }
 
   const updated = updateReceiver(id, {
-    ...(body.kyc_status ? { kyc_status: body.kyc_status } : {}),
-    ...(body.kyc_type ? { kyc_type: body.kyc_type } : {}),
+    ...(body.kyc_status !== undefined ? { kyc_status: body.kyc_status } : {}),
+    ...(body.kyc_type !== undefined ? { kyc_type: body.kyc_type } : {}),
   });
   if (!updated) {
     return c.json({ error: "not_found", message: `Receiver ${id} not found` }, 404);
