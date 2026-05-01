@@ -9,13 +9,29 @@ import {
   getBlockchainWallets,
   RECEIVER_KYC_STATUSES,
   RECEIVER_KYC_TYPES,
-  type ReceiverKycStatus,
-  type ReceiverKycType,
+  type Receiver,
 } from "../store";
 
 const app = new Hono();
 
 // --- Validation helpers ---
+
+function resolveKyc(
+  body: Record<string, unknown>,
+): { kyc_status: Receiver["kyc_status"]; kyc_type: Receiver["kyc_type"] } | { error: string } {
+  const status = body.kyc_status ?? "approved";
+  const type = body.kyc_type ?? "standard";
+  if (typeof status !== "string" || !(RECEIVER_KYC_STATUSES as readonly string[]).includes(status)) {
+    return { error: `kyc_status must be one of: ${RECEIVER_KYC_STATUSES.join(", ")}` };
+  }
+  if (typeof type !== "string" || !(RECEIVER_KYC_TYPES as readonly string[]).includes(type)) {
+    return { error: `kyc_type must be one of: ${RECEIVER_KYC_TYPES.join(", ")}` };
+  }
+  return {
+    kyc_status: status as Receiver["kyc_status"],
+    kyc_type: type as Receiver["kyc_type"],
+  };
+}
 
 function requireFields(
   body: Record<string, unknown>,
@@ -42,34 +58,10 @@ app.post("/", async (c) => {
   const now = new Date().toISOString();
   const id = genId("receiver");
 
-  // Validate kyc_status if provided (applies to both individual and business)
-  if (body.kyc_status !== undefined && !RECEIVER_KYC_STATUSES.includes(body.kyc_status)) {
-    return c.json(
-      {
-        error: "validation_error",
-        message: `kyc_status must be one of: ${RECEIVER_KYC_STATUSES.join(", ")}`,
-      },
-      400,
-    );
+  const kyc = resolveKyc(body);
+  if ("error" in kyc) {
+    return c.json({ error: "validation_error", message: kyc.error }, 400);
   }
-
-  // Validate kyc_type if provided (applies to both individual and business)
-  if (body.kyc_type !== undefined && !RECEIVER_KYC_TYPES.includes(body.kyc_type)) {
-    return c.json(
-      {
-        error: "validation_error",
-        message: `kyc_type must be one of: ${RECEIVER_KYC_TYPES.join(", ")}`,
-      },
-      400,
-    );
-  }
-
-  const kycStatus: ReceiverKycStatus = RECEIVER_KYC_STATUSES.includes(body.kyc_status)
-    ? body.kyc_status
-    : "approved";
-  const kycType: ReceiverKycType = RECEIVER_KYC_TYPES.includes(body.kyc_type)
-    ? body.kyc_type
-    : "standard";
 
   if (isBusiness) {
     const err = requireFields(body, ["business_name", "email", "country"]);
@@ -91,8 +83,8 @@ app.post("/", async (c) => {
       tax_id: body.tax_id ?? null,
       doing_business_as: body.doing_business_as ?? null,
       status: "active",
-      kyc_status: kycStatus,
-      kyc_type: kycType,
+      kyc_status: kyc.kyc_status,
+      kyc_type: kyc.kyc_type,
       instance_id: instanceId,
       created_at: now,
       updated_at: now,
@@ -120,8 +112,8 @@ app.post("/", async (c) => {
     date_of_birth: body.date_of_birth ?? null,
     phone: body.phone ?? null,
     status: "active",
-    kyc_status: kycStatus,
-    kyc_type: kycType,
+    kyc_status: kyc.kyc_status,
+    kyc_type: kyc.kyc_type,
     instance_id: instanceId,
     created_at: now,
     updated_at: now,
