@@ -27,7 +27,7 @@ async function test(
   method: string,
   url: string,
   body?: unknown,
-  validate?: (status: number, body: unknown) => string | null,
+  validate?: (status: number, body: unknown) => string | null | Promise<string | null>,
   headers?: Record<string, string>,
 ) {
   try {
@@ -37,7 +37,7 @@ async function test(
       body: body ? JSON.stringify(body) : undefined,
     });
     const json = await res.json();
-    const err = validate?.(res.status, json) ?? null;
+    const err = (await validate?.(res.status, json)) ?? null;
     results.push({
       name,
       passed: !err,
@@ -187,6 +187,110 @@ async function run() {
     undefined,
     (s, b: any) => {
       if (s !== 404) return `Expected 404, got ${s}`;
+      return null;
+    },
+  );
+
+  // ==================== RECEIVER LIST + FIXTURE ====================
+
+  await test(
+    "Fixture receivers are present after startup",
+    "GET",
+    `${API}/receivers?limit=200`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      const ids = new Set(b.data.map((r: any) => r.id));
+      const required = ["rc_fixture_001", "rc_fixture_002", "rc_fixture_003", "rc_fixture_004"];
+      for (const id of required) {
+        if (!ids.has(id)) return `Missing fixture id: ${id}`;
+      }
+      return null;
+    },
+  );
+
+  await test(
+    "Fixture receivers expose distinct kyc_status values",
+    "GET",
+    `${API}/receivers?limit=200`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      const byId: Record<string, string> = {};
+      for (const r of b.data) byId[r.id] = r.kyc_status;
+      if (byId["rc_fixture_001"] !== "approved") return `001 expected approved, got ${byId["rc_fixture_001"]}`;
+      if (byId["rc_fixture_002"] !== "verifying") return `002 expected verifying, got ${byId["rc_fixture_002"]}`;
+      if (byId["rc_fixture_003"] !== "rejected") return `003 expected rejected, got ${byId["rc_fixture_003"]}`;
+      if (byId["rc_fixture_004"] !== "approved") return `004 expected approved, got ${byId["rc_fixture_004"]}`;
+      return null;
+    },
+  );
+
+  await test(
+    "List receivers (object form with pagination)",
+    "GET",
+    `${API}/receivers?limit=50`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (!Array.isArray(b.data)) return "Expected b.data to be an array";
+      if (typeof b.pagination?.has_more !== "boolean") return "Missing pagination.has_more";
+      const statuses = b.data.map((r: any) => r.kyc_status).sort();
+      if (!statuses.includes("verifying")) return "verifying receiver missing from list";
+      return null;
+    },
+  );
+
+  await test(
+    "List receivers filtered by status=verifying",
+    "GET",
+    `${API}/receivers?status=verifying`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (!b.data.every((r: any) => r.kyc_status === "verifying")) {
+        return "Expected only verifying receivers in result";
+      }
+      return null;
+    },
+  );
+
+  // Seed enough receivers so limit=10 reliably paginates (BlindPay's smallest allowed limit).
+  for (let i = 0; i < 12; i++) {
+    await fetch(`${API}/receivers`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        first_name: `Page${i}`,
+        last_name: `User${i}`,
+        email: `page${i}@example.com`,
+      }),
+    });
+  }
+
+  await test(
+    "List receivers paginates with starting_after",
+    "GET",
+    `${API}/receivers?limit=10`,
+    undefined,
+    async (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      if (b.data.length !== 10) return `Expected 10 items on first page, got ${b.data.length}`;
+      if (!b.pagination.has_more) return "Expected has_more=true after seeding >10 receivers";
+      if (b.pagination.next_page == null) return "Expected pagination.next_page to be set when has_more is true";
+
+      const lastIdOnPage = b.data[b.data.length - 1].id;
+      if (lastIdOnPage !== b.pagination.next_page) {
+        return `Expected next_page (${b.pagination.next_page}) to equal last id of page (${lastIdOnPage})`;
+      }
+
+      const next = await fetch(`${API}/receivers?limit=10&starting_after=${b.pagination.next_page}`, { headers: HEADERS });
+      const nextBody: any = await next.json();
+      if (next.status !== 200) return `cursor request failed with ${next.status}`;
+      const firstPageIds = new Set(b.data.map((r: any) => r.id));
+      if (nextBody.data.some((r: any) => firstPageIds.has(r.id))) {
+        return "Cursor did not advance — overlap with first page";
+      }
       return null;
     },
   );
@@ -721,6 +825,31 @@ async function run() {
   );
 
   // ==================== ADMIN RESET ====================
+
+  await test(
+    "Admin reset re-seeds fixture",
+    "POST",
+    `${ADMIN}/reset`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
+  await test(
+    "Fixture receivers still present after reset",
+    "GET",
+    `${API}/receivers?limit=200`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      const ids = new Set(b.data.map((r: any) => r.id));
+      if (!ids.has("rc_fixture_001")) return "fixture cleared by reset";
+      return null;
+    },
+  );
 
   await test(
     "Admin: reset all state",

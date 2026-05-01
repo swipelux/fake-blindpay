@@ -3,6 +3,7 @@ import { genId } from "../ids";
 import {
   storeReceiver,
   getReceiver,
+  listReceivers,
   storeBankAccount,
   getBankAccounts,
   storeBlockchainWallet,
@@ -10,6 +11,54 @@ import {
 } from "../store";
 
 const app = new Hono();
+
+const ALLOWED_LIMITS = new Set(["10", "50", "100", "200", "500", "1000"]);
+
+// GET /v1/instances/:instanceId/receivers — list receivers with optional filters and cursor pagination
+app.get("/", (c) => {
+  const instanceId = c.req.param("instanceId") ?? "inst_unknown";
+  const q = c.req.query();
+
+  let items = listReceivers(instanceId);
+
+  if (q.status) items = items.filter((r) => r.kyc_status === q.status);
+  if (q.country) items = items.filter((r) => r.country === q.country);
+  if (q.receiver_id) items = items.filter((r) => r.id === q.receiver_id);
+  if (q.full_name) {
+    const needle = q.full_name.toLowerCase();
+    items = items.filter(
+      (r) => r.type === "individual" && [r.first_name, r.last_name].filter(Boolean).join(" ").toLowerCase().includes(needle),
+    );
+  }
+  if (q.receiver_name) {
+    const needle = q.receiver_name.toLowerCase();
+    items = items.filter(
+      (r) => r.type === "business" && (r.legal_name ?? r.business_name ?? "").toLowerCase().includes(needle),
+    );
+  }
+
+  const rawLimit = q.limit ?? "50";
+  const limit = ALLOWED_LIMITS.has(rawLimit) ? Number(rawLimit) : 50;
+
+  let startIdx = 0;
+  if (q.starting_after) {
+    const i = items.findIndex((r) => r.id === q.starting_after);
+    // Unknown cursor id: silently restart from 0. Mirrors BlindPay's lenient cursor handling.
+    startIdx = i >= 0 ? i + 1 : 0;
+  }
+
+  const page = items.slice(startIdx, startIdx + limit);
+  const hasMore = startIdx + limit < items.length;
+
+  return c.json({
+    data: page,
+    pagination: {
+      has_more: hasMore,
+      next_page: hasMore && page.length > 0 ? page[page.length - 1].id : null,
+      prev_page: null,
+    },
+  });
+});
 
 // --- Validation helpers ---
 
@@ -58,7 +107,8 @@ app.post("/", async (c) => {
       tax_id: body.tax_id ?? null,
       doing_business_as: body.doing_business_as ?? null,
       status: "active",
-      kyc_status: "approved",
+      kyc_status: "approved" as const,
+      kyc_type: "standard" as const,
       instance_id: instanceId,
       created_at: now,
       updated_at: now,
@@ -86,7 +136,8 @@ app.post("/", async (c) => {
     date_of_birth: body.date_of_birth ?? null,
     phone: body.phone ?? null,
     status: "active",
-    kyc_status: "approved",
+    kyc_status: "approved" as const,
+    kyc_type: "standard" as const,
     instance_id: instanceId,
     created_at: now,
     updated_at: now,

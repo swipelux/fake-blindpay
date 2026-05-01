@@ -5,6 +5,7 @@ import payins from "./routes/payins";
 import quotes from "./routes/quotes";
 import receivers from "./routes/receivers";
 import admin from "./routes/admin";
+import { seedFixtureReceivers } from "./seed";
 
 const app = new Hono();
 
@@ -32,6 +33,8 @@ app.route("/v1/instances/:instanceId/receivers", receivers);
 app.route("/admin", admin);
 
 const port = parseInt(process.env.PORT ?? "3001", 10);
+
+seedFixtureReceivers();
 
 serve({ fetch: app.fetch, port }, () => {
   console.log(`fake-blindpay listening on port ${port}`);

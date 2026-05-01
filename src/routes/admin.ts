@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { updatePayinStatus, clearAll, type PayinStatus } from "../store";
+import { updatePayinStatus, type PayinStatus } from "../store";
+import { resetState } from "../seed";
 
 const app = new Hono();
 
@@ -87,9 +88,9 @@ app.post("/payins/:id/refund", async (c) => {
   return c.json({ status: "ok", payin_id: payin.id, payin_status: payin.status });
 });
 
-// POST /admin/reset — clear all in-memory state
+// POST /admin/reset — clear all in-memory state and re-seed fixture receivers
 app.post("/reset", (c) => {
-  clearAll();
+  resetState();
   return c.json({ status: "ok", message: "All state cleared" });
 });
 
