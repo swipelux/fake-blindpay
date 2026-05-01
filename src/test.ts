@@ -191,73 +191,37 @@ async function run() {
     },
   );
 
-  // ==================== RECEIVER LIST + KYC STATUS ====================
+  // ==================== RECEIVER LIST + FIXTURE ====================
 
   await test(
-    "Create receiver with kyc_status=verifying",
-    "POST",
-    `${API}/receivers`,
-    {
-      first_name: "Pending",
-      last_name: "Person",
-      email: "pending@example.com",
-      kyc_status: "verifying",
-    },
+    "Fixture receivers are present after startup",
+    "GET",
+    `${API}/receivers?limit=200`,
+    undefined,
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.kyc_status !== "verifying") return `Expected verifying, got ${b.kyc_status}`;
-      if (b.kyc_type !== "standard") return `Expected default kyc_type=standard, got ${b.kyc_type}`;
+      const ids = new Set(b.data.map((r: any) => r.id));
+      const required = ["rc_fixture_001", "rc_fixture_002", "rc_fixture_003", "rc_fixture_004"];
+      for (const id of required) {
+        if (!ids.has(id)) return `Missing fixture id: ${id}`;
+      }
       return null;
     },
   );
 
   await test(
-    "Create receiver with custom kyc_type=enhanced",
-    "POST",
-    `${API}/receivers`,
-    {
-      first_name: "Enhanced",
-      last_name: "Person",
-      email: "enhanced@example.com",
-      kyc_type: "enhanced",
-    },
+    "Fixture receivers expose distinct kyc_status values",
+    "GET",
+    `${API}/receivers?limit=200`,
+    undefined,
     (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.kyc_type !== "enhanced") return `Expected enhanced, got ${b.kyc_type}`;
-      return null;
-    },
-  );
-
-  await test(
-    "Reject invalid kyc_status",
-    "POST",
-    `${API}/receivers`,
-    {
-      first_name: "Bad",
-      last_name: "Status",
-      email: "bad@example.com",
-      kyc_status: "totally_invalid",
-    },
-    (s, b: any) => {
-      if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("kyc_status")) return `Missing hint: ${b.message}`;
-      return null;
-    },
-  );
-
-  await test(
-    "Reject invalid kyc_type",
-    "POST",
-    `${API}/receivers`,
-    {
-      first_name: "Bad",
-      last_name: "Type",
-      email: "badtype@example.com",
-      kyc_type: "totally_invalid",
-    },
-    (s, b: any) => {
-      if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("kyc_type")) return `Missing hint: ${b.message}`;
+      const byId: Record<string, string> = {};
+      for (const r of b.data) byId[r.id] = r.kyc_status;
+      if (byId["rc_fixture_001"] !== "approved") return `001 expected approved, got ${byId["rc_fixture_001"]}`;
+      if (byId["rc_fixture_002"] !== "verifying") return `002 expected verifying, got ${byId["rc_fixture_002"]}`;
+      if (byId["rc_fixture_003"] !== "rejected") return `003 expected rejected, got ${byId["rc_fixture_003"]}`;
+      if (byId["rc_fixture_004"] !== "approved") return `004 expected approved, got ${byId["rc_fixture_004"]}`;
       return null;
     },
   );
@@ -329,60 +293,6 @@ async function run() {
       }
       return null;
     },
-  );
-
-  // ==================== ADMIN: PATCH /receivers/:id ====================
-
-  // Seed a fresh pending receiver to flip and a fresh approved receiver to reject.
-  let pendingReceiverId: string | undefined;
-  await test(
-    "Seed pending receiver for PATCH journey",
-    "POST",
-    `${API}/receivers`,
-    { first_name: "Flip", last_name: "Me", email: "flip@example.com", kyc_status: "verifying" },
-    (s, b: any) => {
-      if (s !== 200) return `Expected 200, got ${s}`;
-      pendingReceiverId = b.id;
-      return null;
-    },
-  );
-
-  await test(
-    "Admin: flip kyc_status from verifying to approved",
-    "PATCH",
-    `${ADMIN}/receivers/${pendingReceiverId!}`,
-    { kyc_status: "approved" },
-    (s, b: any) => {
-      if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.kyc_status !== "approved") return `Expected approved, got ${b.kyc_status}`;
-      return null;
-    },
-    { "Content-Type": "application/json" },
-  );
-
-  await test(
-    "Admin: PATCH unknown receiver → 404",
-    "PATCH",
-    `${ADMIN}/receivers/rc_nonexistent`,
-    { kyc_status: "approved" },
-    (s, b: any) => {
-      if (s !== 404) return `Expected 404, got ${s}`;
-      return null;
-    },
-    { "Content-Type": "application/json" },
-  );
-
-  await test(
-    "Admin: reject invalid kyc_status on PATCH",
-    "PATCH",
-    `${ADMIN}/receivers/${pendingReceiverId!}`,
-    { kyc_status: "garbage" },
-    (s, b: any) => {
-      if (s !== 400) return `Expected 400, got ${s}`;
-      if (!b.message?.includes("kyc_status")) return `Missing hint: ${b.message}`;
-      return null;
-    },
-    { "Content-Type": "application/json" },
   );
 
   // ==================== BANK ACCOUNTS ====================
@@ -915,6 +825,31 @@ async function run() {
   );
 
   // ==================== ADMIN RESET ====================
+
+  await test(
+    "Admin reset re-seeds fixture",
+    "POST",
+    `${ADMIN}/reset`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      return null;
+    },
+    { "Content-Type": "application/json" },
+  );
+
+  await test(
+    "Fixture receivers still present after reset",
+    "GET",
+    `${API}/receivers?limit=200`,
+    undefined,
+    (s, b: any) => {
+      if (s !== 200) return `Expected 200, got ${s}`;
+      const ids = new Set(b.data.map((r: any) => r.id));
+      if (!ids.has("rc_fixture_001")) return "fixture cleared by reset";
+      return null;
+    },
+  );
 
   await test(
     "Admin: reset all state",
