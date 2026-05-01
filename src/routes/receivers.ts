@@ -15,7 +15,7 @@ import {
 
 const app = new Hono();
 
-const ALLOWED_LIMITS = new Set(["10", "50", "100", "200", "500", "1000"]);
+const ALLOWED_LIMITS = new Set(["2", "10", "50", "100", "200", "500", "1000"]);
 
 // GET /v1/instances/:instanceId/receivers — list receivers with optional filters and cursor pagination
 app.get("/", (c) => {
@@ -30,7 +30,7 @@ app.get("/", (c) => {
   if (q.full_name) {
     const needle = q.full_name.toLowerCase();
     items = items.filter(
-      (r) => r.type === "individual" && `${r.first_name ?? ""} ${r.last_name ?? ""}`.toLowerCase().includes(needle),
+      (r) => r.type === "individual" && [r.first_name, r.last_name].filter(Boolean).join(" ").toLowerCase().includes(needle),
     );
   }
   if (q.receiver_name) {
@@ -46,6 +46,7 @@ app.get("/", (c) => {
   let startIdx = 0;
   if (q.starting_after) {
     const i = items.findIndex((r) => r.id === q.starting_after);
+    // Unknown cursor id: silently restart from 0. Mirrors BlindPay's lenient cursor handling.
     startIdx = i >= 0 ? i + 1 : 0;
   }
 

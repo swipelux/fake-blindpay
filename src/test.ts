@@ -294,19 +294,27 @@ async function run() {
   await test(
     "List receivers paginates with starting_after",
     "GET",
-    `${API}/receivers?limit=10`,
+    `${API}/receivers?limit=2`,
     undefined,
     async (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
       if (b.data.length < 2) return `Need >=2 receivers for pagination test, got ${b.data.length}`;
-      // Use limit=10 first to capture multiple receivers (state from earlier tests),
-      // then re-fetch with limit=1 + starting_after pointing to the first receiver to verify cursor advance.
-      const firstId = b.data[0].id;
-      const next = await fetch(`${API}/receivers?limit=10&starting_after=${firstId}`, { headers: HEADERS });
+      if (b.pagination.next_page == null) return "Expected pagination.next_page to be set when has_more is true";
+
+      // Use the cursor field returned by the route — not data[0].id directly —
+      // so we actually exercise the next_page production path.
+      const cursor = b.data[b.data.length - 1].id;
+      if (cursor !== b.pagination.next_page) {
+        return `Expected next_page (${b.pagination.next_page}) to equal last id of page (${cursor})`;
+      }
+
+      const next = await fetch(`${API}/receivers?limit=2&starting_after=${b.pagination.next_page}`, { headers: HEADERS });
       const nextBody: any = await next.json();
       if (next.status !== 200) return `cursor request failed with ${next.status}`;
-      if (nextBody.data.find((r: any) => r.id === firstId)) {
-        return "Cursor did not advance — first id appeared in second page";
+      // None of the items from the first page should appear in the second page.
+      const firstPageIds = new Set(b.data.map((r: any) => r.id));
+      if (nextBody.data.some((r: any) => firstPageIds.has(r.id))) {
+        return "Cursor did not advance — overlap with first page";
       }
       return null;
     },
