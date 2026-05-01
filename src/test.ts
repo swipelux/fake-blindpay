@@ -291,27 +291,38 @@ async function run() {
     },
   );
 
+  // Seed enough receivers so limit=10 reliably paginates (BlindPay's smallest allowed limit).
+  for (let i = 0; i < 12; i++) {
+    await fetch(`${API}/receivers`, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({
+        first_name: `Page${i}`,
+        last_name: `User${i}`,
+        email: `page${i}@example.com`,
+      }),
+    });
+  }
+
   await test(
     "List receivers paginates with starting_after",
     "GET",
-    `${API}/receivers?limit=2`,
+    `${API}/receivers?limit=10`,
     undefined,
     async (s, b: any) => {
       if (s !== 200) return `Expected 200, got ${s}`;
-      if (b.data.length < 2) return `Need >=2 receivers for pagination test, got ${b.data.length}`;
+      if (b.data.length !== 10) return `Expected 10 items on first page, got ${b.data.length}`;
+      if (!b.pagination.has_more) return "Expected has_more=true after seeding >10 receivers";
       if (b.pagination.next_page == null) return "Expected pagination.next_page to be set when has_more is true";
 
-      // Use the cursor field returned by the route — not data[0].id directly —
-      // so we actually exercise the next_page production path.
-      const cursor = b.data[b.data.length - 1].id;
-      if (cursor !== b.pagination.next_page) {
-        return `Expected next_page (${b.pagination.next_page}) to equal last id of page (${cursor})`;
+      const lastIdOnPage = b.data[b.data.length - 1].id;
+      if (lastIdOnPage !== b.pagination.next_page) {
+        return `Expected next_page (${b.pagination.next_page}) to equal last id of page (${lastIdOnPage})`;
       }
 
-      const next = await fetch(`${API}/receivers?limit=2&starting_after=${b.pagination.next_page}`, { headers: HEADERS });
+      const next = await fetch(`${API}/receivers?limit=10&starting_after=${b.pagination.next_page}`, { headers: HEADERS });
       const nextBody: any = await next.json();
       if (next.status !== 200) return `cursor request failed with ${next.status}`;
-      // None of the items from the first page should appear in the second page.
       const firstPageIds = new Set(b.data.map((r: any) => r.id));
       if (nextBody.data.some((r: any) => firstPageIds.has(r.id))) {
         return "Cursor did not advance — overlap with first page";

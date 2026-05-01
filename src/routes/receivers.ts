@@ -15,7 +15,7 @@ import {
 
 const app = new Hono();
 
-const ALLOWED_LIMITS = new Set(["2", "10", "50", "100", "200", "500", "1000"]);
+const ALLOWED_LIMITS = new Set(["10", "50", "100", "200", "500", "1000"]);
 
 // GET /v1/instances/:instanceId/receivers — list receivers with optional filters and cursor pagination
 app.get("/", (c) => {
