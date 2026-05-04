@@ -15,6 +15,9 @@ async function fireWebhook(
     return;
   }
 
+  // Real Blindpay uses BRL on the sender side for PIX, USD for the wire rails.
+  const senderCurrency = payin.paymentMethod === "pix" ? "BRL" : "USD";
+
   const payload = {
     type,
     data: {
@@ -23,7 +26,7 @@ async function fireWebhook(
       payment_method: payin.paymentMethod,
       token: payin.token,
       sender_amount: payin.senderAmount,
-      sender_currency: "USD",
+      sender_currency: senderCurrency,
       receiver_amount: payin.receiverAmount,
       receiver_currency: payin.token,
       memo_code: payin.quoteId,

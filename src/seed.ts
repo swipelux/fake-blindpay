@@ -65,6 +65,23 @@ export const FIXTURE_RECEIVERS: Receiver[] = [
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
   },
+  // BR receiver — exercises the country-aware matcher + reconciler path.
+  // PIX rails settle in BRL against country='BR' receivers; without one
+  // here the schedule has nothing to map a PIX customer onto.
+  {
+    id: "rc_fixture_005",
+    type: "business",
+    business_name: "Garoa Logistica BR",
+    legal_name: "Garoa Logistica BR",
+    email: "ops@garoa-br.example",
+    country: "BR",
+    status: "active",
+    kyc_status: "approved",
+    kyc_type: "standard",
+    instance_id: FIXTURE_INSTANCE_ID,
+    created_at: "2026-01-01T00:00:00.000Z",
+    updated_at: "2026-01-01T00:00:00.000Z",
+  },
 ];
 
 export function seedFixtureReceivers(): void {
